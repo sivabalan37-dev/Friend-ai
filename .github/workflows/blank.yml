@@ -19,16 +19,42 @@ jobs:
         with:
           gradle-version: "8.13"
 
-      - name: Build debug APK
+      - name: Find the Gradle project
+        id: proj
         run: |
+          for d in . */ */*/; do
+            if [ -f "$d/settings.gradle" ] || [ -f "$d/settings.gradle.kts" ]; then
+              echo "dir=$d" >> "$GITHUB_OUTPUT"
+              echo "Using Gradle project in: $d"
+              exit 0
+            fi
+          done
+          echo "::error title=No Android project found::No settings.gradle(.kts) in the repo root or its subfolders. Is the project still zipped, or are files missing?"
+          ls -la
+          exit 1
+
+      - name: Build debug APK
+        id: build
+        working-directory: ${{ steps.proj.outputs.dir }}
+        run: |
+          set -o pipefail
           if [ -f gradlew ] && [ -f gradle/wrapper/gradle-wrapper.jar ]; then
             chmod +x gradlew
-            ./gradlew assembleDebug --stacktrace
+            ./gradlew assembleDebug --stacktrace 2>&1 | tee "$RUNNER_TEMP/build.log"
           else
-            gradle assembleDebug --stacktrace
+            gradle assembleDebug --stacktrace 2>&1 | tee "$RUNNER_TEMP/build.log"
           fi
+
+      - name: Show the real error
+        if: ${{ failure() && steps.build.outcome == 'failure' }}
+        run: |
+          grep -E -B1 -A8 "What went wrong|^e: " "$RUNNER_TEMP/build.log" | head -60 > "$RUNNER_TEMP/key.txt"
+          [ -s "$RUNNER_TEMP/key.txt" ] || tail -30 "$RUNNER_TEMP/build.log" > "$RUNNER_TEMP/key.txt"
+          echo "::error title=Gradle build failed::$(head -12 "$RUNNER_TEMP/key.txt" | tr '\n' ' ')"
+          { echo '### Gradle build failed'; echo '```'; cat "$RUNNER_TEMP/key.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:
           name: thala_debug_apk
           path: "**/build/outputs/apk/debug/*.apk"
+          if-no-files-found: error
